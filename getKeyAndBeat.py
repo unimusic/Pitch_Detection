@@ -3,8 +3,11 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.signal import upfirdn, filtfilt
 from librosa.core import load, resample
+from librosa.beat import beat_track
 from matplotlib import pyplot as plt
 from matplotlib import mlab
+import itertools
+import operator
 import pickle
 import os
 import ipdb
@@ -331,19 +334,77 @@ def getCorrespondingBin(x, sval, directSearch):
 	return int(index)
 
 
+def get_notes_and_chords(snippet):
+	chroma_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+	indices = np.where(snippet>0.1)[0]
+	notes = [chroma_names[i] for i in indices]
+	chords = []
+	for i in range(0, len(chroma_names)):
+		if chroma_names[i] in notes:
+			note_major1 = chroma_names[np.mod(i+4, 12)]
+			note_2 = chroma_names[np.mod(i+7, 12)]
+			note_minor1 = chroma_names[np.mod(i+3, 12)]
+			if note_major1 in notes and note_2 in notes:
+				chords.append(chroma_names[i] + 'maj')
+			if note_minor1 in notes and note_2 in notes:
+				chords.append(chroma_names[i] + 'min')
+	return notes, chords
+
+def most_common(L):
+  # get an iterable of (item, iterable) pairs
+  SL = sorted((x, i) for i, x in enumerate(L))
+  # print 'SL:', SL
+  groups = itertools.groupby(SL, key=operator.itemgetter(0))
+  # auxiliary function to get "quality" for an item
+  def _auxfun(g):
+    item, iterable = g
+    count = 0
+    min_index = len(L)
+    for _, where in iterable:
+      count += 1
+      min_index = min(min_index, where)
+    # print 'item %r, count %r, minind %r' % (item, count, min_index)
+    return count, -min_index
+  # pick the highest-count/earliest item
+  return max(groups, key=_auxfun)[0]
+
+
+def get_start_and_end_key(f, cutoff):
+	f = f[:, cutoff:-cutoff]
+	f1 = f[:, 0:f.shape[1]/2]
+	f2 = f[:, f.shape[1]/2:-1]
+	all_chords1 = []
+	all_chords2 = []
+	for i in range(0, f1.shape[1]):
+		notes, chords = get_notes_and_chords(f[:,i])
+		all_chords1 += chords
+	key1 = most_common(all_chords1)
+	for i in range(0, f2.shape[1]):
+		notes, chords = get_notes_and_chords(f[:,i])
+		all_chords2 += chords
+	key2 = most_common(all_chords2)
+
+	print 'start key: ' + key1
+	print 'end key: ' + key2
+	return key1, key2
+
+
 def main(filename):
-	f_audio, fs = load(os.path.join('data_WAV/',filename))
+	f_audio, fs = load(filename)
 	shiftFB=estimateTuning(f_audio)
 	print 'shiftFB: ' + str(shiftFB)
 	f_pitch, featureRate, winLenSTMSP, winOvSTMSP = audio_to_pitch_via_FB(f_audio)
 	print 'finished audio_to_pitch_via_FB'
 	f_CRP  = pitch_to_CRP(f_pitch, inputFeatureRate=featureRate)
 	f_CRPSmoothed, featureRateSmoothed = smoothDownsampleFeature(f_CRP, 
-													winLenSmooth=21,
-													downsampSmooth=5,
-													inputFeatureRate=featureRate)
-	ipdb.set_trace()
-	return key, beat
+											winLenSmooth=21,
+											downsampSmooth=5,
+											inputFeatureRate=featureRate)
+	cutoff = 10
+	start_key, end_key = get_start_and_end_key(f_CRPSmoothed, cutoff)
+	tempo, beat = beat_track(f_audio, fs)
+	print 'bpm: ' + str(tempo)
+	return start_key, end_key, tempo
 
 
 if __name__ == '__main__':
