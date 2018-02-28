@@ -8,7 +8,6 @@ from matplotlib import pyplot as plt
 from matplotlib import mlab
 import itertools
 import operator
-import pickle
 import os
 import ipdb
 import sys
@@ -18,10 +17,6 @@ def audio_to_pitch_via_FB(f_audio,
 						winLenSTMSP=4410,
 						midiMin=21,
 						midiMax=108,
-						save=0,
-						saveDir='',
-						saveFilename='',
-						saveAsTuned=0,
 						fs=22050):
 
 	'''
@@ -81,15 +76,7 @@ def audio_to_pitch_via_FB(f_audio,
 			stop = int(np.floor((float(seg_pcm_stop[k]) / fs) * fs_pitch[p]))
 			f_pitch_energy[p,k] = sum(f_square[start:stop]) * factor
 
-
-	# Save f_pitch_energy for each window size separately as f_pitch
-	if save == 1:
-		f_pitch = f_pitch_energy
-		filename = ''.join([saveFilename, '_pitch_', str(winLenSTMSP)])
-		with open(os.path.join(saveDir, filename), 'wb') as f:
-			pickle.dump(f_pitch, f)
-	else:
-		f_pitch = f_pitch_energy
+	f_pitch = f_pitch_energy
 	return f_pitch, featureRate, winLenSTMSP, winOvSTMSP
 
 
@@ -161,10 +148,7 @@ def pitch_to_CRP(f_pitch,
 				winLenSmooth=1,
 				downsampSmooth=1,
 				normThresh=10**-6,
-				inputFeatureRate=0,
-				save=0,
-				saveDir='',
-				saveFilename=''):
+				inputFeatureRate=0):
 	'''
 	Calculates CRP (Chroma DCT-reduced Log Pitch) Features
 	(see "Towards Timbre-Invariant Audio Features for Harmony-Based Music" by
@@ -199,12 +183,6 @@ def pitch_to_CRP(f_pitch,
 		f_CRP = normalizeFeature(f_CRP,normP,normThresh)
 	else:
 		CrpFeatureRate = inputFeatureRate
-
-	# Saving to file
-	if save:
-		filename = ''.join(saveFilename,'_CRP_',str(winLenSmooth),'_',str(parameter.downsampSmooth))
-		with open(os.path.join(saveDir,filename), 'wb') as f:
-			pickle.dump(f_CRP, f)
 
 	return f_CRP
 
@@ -369,42 +347,51 @@ def most_common(L):
   return max(groups, key=_auxfun)[0]
 
 
-def get_start_and_end_key(f, cutoff):
-	f = f[:, cutoff:-cutoff]
-	f1 = f[:, 0:f.shape[1]/2]
-	f2 = f[:, f.shape[1]/2:-1]
-	all_chords1 = []
-	all_chords2 = []
-	for i in range(0, f1.shape[1]):
+def get_key(f):
+	all_chords = []
+	for i in range(0, f.shape[1]):
 		notes, chords = get_notes_and_chords(f[:,i])
-		all_chords1 += chords
-	key1 = most_common(all_chords1)
-	for i in range(0, f2.shape[1]):
-		notes, chords = get_notes_and_chords(f[:,i])
-		all_chords2 += chords
-	key2 = most_common(all_chords2)
-
-	print 'start key: ' + key1
-	print 'end key: ' + key2
-	return key1, key2
+		all_chords += chords
+	key = most_common(all_chords)
+	all_chords = [c for c in all_chords if c != key]
+	if len(all_chords) > 0:
+		key2 = most_common(all_chords)
+	else:
+		key2 = None
+	return key, key2
 
 
 def main(filename):
 	f_audio, fs = load(filename)
-	shiftFB=estimateTuning(f_audio)
-	print 'shiftFB: ' + str(shiftFB)
-	f_pitch, featureRate, winLenSTMSP, winOvSTMSP = audio_to_pitch_via_FB(f_audio)
-	print 'finished audio_to_pitch_via_FB'
-	f_CRP  = pitch_to_CRP(f_pitch, inputFeatureRate=featureRate)
-	f_CRPSmoothed, featureRateSmoothed = smoothDownsampleFeature(f_CRP, 
+	print f_audio.size
+	if f_audio.size > 500000:
+		f_start = f_audio[0:500000]
+		f_end = f_audio[-500000:-1]
+	else:
+		f_start = f_audio
+		f_end = f_audio
+	both_fs = [f_start, f_end]
+	
+	for i in range(0,2):
+		f_audio = both_fs[i]
+		shiftFB=estimateTuning(f_audio)
+		print 'shiftFB: ' + str(shiftFB)
+		f_pitch, featureRate, winLenSTMSP, winOvSTMSP = audio_to_pitch_via_FB(f_audio)
+		print 'finished audio_to_pitch_via_FB'
+		f_CRP  = pitch_to_CRP(f_pitch, inputFeatureRate=featureRate)
+		f_CRPSmoothed, featureRateSmoothed = smoothDownsampleFeature(f_CRP, 
 											winLenSmooth=21,
 											downsampSmooth=5,
 											inputFeatureRate=featureRate)
-	cutoff = 10
-	start_key, end_key = get_start_and_end_key(f_CRPSmoothed, cutoff)
-	tempo, beat = beat_track(f_audio, fs)
-	print 'bpm: ' + str(tempo)
-	return start_key, end_key, tempo
+		key, key2 = get_key(f_CRPSmoothed)
+		tempo, beat = beat_track(f_audio, fs)
+		if i == 0:
+			start_stats = [key, key2, tempo]
+			print 'start_stats: keys = ' + key + ', ' + key2 + ' and tempo = ' + str(tempo)
+		elif i == 1:
+			end_stats = [key, key2, tempo]
+			print 'end_stats: keys = ' + key + ', ' + key2 + ' and tempo = ' + str(tempo)
+	return start_stats, end_stats
 
 
 if __name__ == '__main__':
